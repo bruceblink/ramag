@@ -237,7 +237,10 @@ impl Render for KeyDetailPanel {
                 .into_any_element();
         };
 
-        let header = header::render_header(self, &key, fg, muted_fg, accent, border, cx);
+        // 窄窗口把标题元数据和操作区分成上下两行，避免固定操作挤出详情面板。
+        let compact_header = f32::from(window.viewport_size().width) < 720.0;
+        let header =
+            header::render_header(self, &key, fg, muted_fg, accent, border, compact_header, cx);
         let view_mode = self.value_view_mode;
 
         // body + 是否自带虚拟滚动：容器类型走 uniform_list（自滚动），其余走普通滚动

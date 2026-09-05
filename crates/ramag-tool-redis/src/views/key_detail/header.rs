@@ -19,6 +19,7 @@ pub(super) fn render_header(
     muted_fg: gpui::Hsla,
     accent: gpui::Hsla,
     border: gpui::Hsla,
+    compact: bool,
     cx: &mut Context<KeyDetailPanel>,
 ) -> impl IntoElement + use<> {
     let ttl_label = match panel.ttl_ms {
@@ -36,6 +37,10 @@ pub(super) fn render_header(
     let read_only = panel.is_read_only();
 
     let mut info_row = h_flex()
+        .debug_selector(|| "redis-key-header-info".into())
+        .w_full()
+        .min_w_0()
+        .flex_wrap()
         .gap(px(10.0))
         .text_xs()
         .text_color(muted_fg)
@@ -160,99 +165,113 @@ pub(super) fn render_header(
                 }),
         );
 
-    let mut header = h_flex()
+    let title_info = v_flex()
+        .debug_selector(|| "redis-key-title-info".into())
+        .min_w_0()
+        .gap(px(4.0))
+        .when(compact, |this| this.w_full().flex_none())
+        .when(!compact, |this| this.flex_1())
+        .child(
+            div()
+                .id("redis-key-title")
+                .debug_selector(|| "redis-key-title".into())
+                .text_sm()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(fg)
+                .overflow_hidden()
+                .text_ellipsis()
+                .cursor_pointer()
+                .on_click({
+                    let key = key.to_string();
+                    move |event: &ClickEvent, window, cx| {
+                        if ramag_ui::is_primary_modifier_double_click(event) {
+                            ramag_ui::copy_text_with_notification(key.clone(), window, cx);
+                        }
+                    }
+                })
+                .child(inline_text_preview(key, 256)),
+        )
+        .child(info_row);
+
+    let header = h_flex()
+        .debug_selector(|| "redis-key-header".into())
         .w_full()
         .px(px(14.0))
         .py(px(10.0))
         .border_b_1()
         .border_color(border)
         .gap(px(12.0))
-        .items_center()
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .id("redis-key-title")
-                        .debug_selector(|| "redis-key-title".into())
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(fg)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .cursor_pointer()
-                        .on_click({
-                            let key = key.to_string();
-                            move |event: &ClickEvent, window, cx| {
-                                if ramag_ui::is_primary_modifier_double_click(event) {
-                                    ramag_ui::copy_text_with_notification(key.clone(), window, cx);
-                                }
-                            }
-                        })
-                        .child(inline_text_preview(key, 256)),
-                )
-                .child(info_row),
-        );
+        .when(compact, |this| this.flex_col().items_start())
+        .when(!compact, |this| this.items_center())
+        .child(title_info);
 
-    header = header.child(copy_value_button);
+    let mut actions = h_flex()
+        .debug_selector(|| "redis-key-actions".into())
+        .items_center()
+        .gap(px(8.0))
+        .flex_none()
+        .when(compact, |this| this.w_full().flex_wrap())
+        .child(copy_value_button);
 
     let key_owned = key.to_string();
     if let Some(value) = value_ref {
         let key_for_emit = key_owned.clone();
-        header = match value {
-            RedisValue::Hash(_) => header.child(add_btn(
+        actions = match value {
+            RedisValue::Hash(_) => actions.child(add_btn(
                 "redis-hash-add-field",
                 "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddHashField(key_for_emit.clone()),
             )),
-            RedisValue::List(_) => header.child(add_btn(
+            RedisValue::List(_) => actions.child(add_btn(
                 "redis-list-add-elem",
                 "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddListElement(key_for_emit.clone()),
             )),
-            RedisValue::Set(_) => header.child(add_btn(
+            RedisValue::Set(_) => actions.child(add_btn(
                 "redis-set-add-elem",
                 "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddSetElement(key_for_emit.clone()),
             )),
-            RedisValue::ZSet(_) => header.child(add_btn(
+            RedisValue::ZSet(_) => actions.child(add_btn(
                 "redis-zset-add-elem",
                 "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddZSetElement(key_for_emit.clone()),
             )),
-            RedisValue::Stream(_) => header.child(add_btn(
+            RedisValue::Stream(_) => actions.child(add_btn(
                 "redis-stream-add-entry",
                 "新增",
                 read_only,
                 cx,
                 move || KeyDetailEvent::RequestAddStreamEntry(key_for_emit.clone()),
             )),
-            _ => header,
+            _ => actions,
         };
     }
 
     let key_for_del = key_owned.clone();
     header.child(
-        ramag_ui::clickable_button("redis-key-delete")
-            .danger()
-            .small()
-            .icon(ramag_ui::icons::trash())
-            .tooltip("删除")
-            .when(read_only, |button| button.tooltip("只读"))
-            .disabled(read_only)
-            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                cx.emit(KeyDetailEvent::RequestDeleteKey(key_for_del.clone()));
-            })),
+        actions.child(
+            ramag_ui::clickable_button("redis-key-delete")
+                .danger()
+                .small()
+                .flex_none()
+                .debug_selector(|| "redis-key-delete".into())
+                .icon(ramag_ui::icons::trash())
+                .tooltip("删除")
+                .when(read_only, |button| button.tooltip("只读"))
+                .disabled(read_only)
+                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                    cx.emit(KeyDetailEvent::RequestDeleteKey(key_for_del.clone()));
+                })),
+        ),
     )
 }
 
@@ -269,6 +288,8 @@ where
     ramag_ui::clickable_button(id)
         .outline()
         .small()
+        .flex_none()
+        .debug_selector(move || id.into())
         .icon(IconName::Plus)
         .tooltip(if disabled { "只读" } else { tooltip })
         .disabled(disabled)

@@ -184,6 +184,20 @@ pub(crate) fn mock_config() -> ConnectionConfig {
     config
 }
 
+fn assert_inside(
+    parent: gpui::Bounds<gpui::Pixels>,
+    child: gpui::Bounds<gpui::Pixels>,
+    label: &str,
+) {
+    assert!(
+        child.origin.x >= parent.origin.x
+            && child.origin.y >= parent.origin.y
+            && child.right() <= parent.right()
+            && child.bottom() <= parent.bottom(),
+        "{label} 越出父容器：parent={parent:?}, child={child:?}"
+    );
+}
+
 #[gpui::test]
 fn key_load_uses_global_limit_without_manual_pagination(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
@@ -250,6 +264,72 @@ fn header_uses_modifier_double_click_for_key_and_button_for_value(cx: &mut TestA
         cx.read_from_clipboard().and_then(|item| item.text()),
         Some("value-content".into())
     );
+}
+
+#[gpui::test]
+fn header_reflows_metadata_and_actions_inside_three_window_widths(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let panel = cx.new(|cx| {
+            let mut panel = KeyDetailPanel::new(mock_service(), cx);
+            panel.config = Some(mock_config());
+            panel.key =
+                Some("orders:region:production:2026-09-05:with-a-long-business-key-name".into());
+            panel.value = Some(RedisValue::Hash(vec![
+                ("field-1".into(), RedisValue::Text("value-1".into())),
+                ("field-2".into(), RedisValue::Text("value-2".into())),
+            ]));
+            panel.collection_total = Some(200);
+            panel.value_byte_limited = true;
+            panel.value_memory_warning = true;
+            panel
+        });
+        gpui_component::Root::new(panel, window, cx)
+    });
+
+    for (width, height) in [(360.0, 360.0), (1024.0, 420.0), (1440.0, 420.0)] {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.run_until_parked();
+
+        let header = cx
+            .debug_bounds("redis-key-header")
+            .expect("Redis Key 头部应渲染");
+        let title_info = cx
+            .debug_bounds("redis-key-title-info")
+            .expect("Redis 标题和元数据区应渲染");
+        let info = cx
+            .debug_bounds("redis-key-header-info")
+            .expect("Redis Key 元数据区应渲染");
+        let actions = cx
+            .debug_bounds("redis-key-actions")
+            .expect("Redis Key 操作区应渲染");
+
+        assert_inside(header, title_info, "标题和元数据区");
+        assert_inside(header, actions, "操作区");
+        assert_inside(title_info, info, "元数据区");
+        for selector in [
+            "redis-value-copy-button",
+            "redis-hash-add-field",
+            "redis-key-delete",
+        ] {
+            let button = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} 应渲染"));
+            assert_inside(actions, button, selector);
+        }
+
+        if width < 720.0 {
+            assert!(
+                actions.origin.y >= title_info.bottom(),
+                "窄窗口操作区应位于标题信息区下方：title_info={title_info:?}, actions={actions:?}"
+            );
+        } else {
+            assert!(
+                actions.origin.y < title_info.bottom(),
+                "宽窗口操作区应与标题信息区保持横向布局：title_info={title_info:?}, actions={actions:?}"
+            );
+        }
+    }
 }
 
 /// 五种容器类型逐一注入后渲染：类型块必须拿到非零高度布局（回归防护：
