@@ -18,8 +18,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AppContext as _, ClickEvent, Context, Entity, EventEmitter, IntoElement, ParentElement, Render,
-    Styled, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px, uniform_list,
+    AppContext as _, ClickEvent, Context, Entity, EventEmitter, InteractiveElement, IntoElement,
+    ParentElement, Render, Styled, UniformListScrollHandle, Window, div,
+    prelude::FluentBuilder as _, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Sizable as _,

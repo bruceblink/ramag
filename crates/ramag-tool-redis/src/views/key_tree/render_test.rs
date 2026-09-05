@@ -10,6 +10,20 @@ use ramag_domain::entities::KeyMeta;
 use super::{INDENT_PX, KeyTreePanel};
 use crate::views::key_detail::render_test::{mock_config, mock_service};
 
+fn assert_inside(
+    parent: gpui::Bounds<gpui::Pixels>,
+    child: gpui::Bounds<gpui::Pixels>,
+    label: &str,
+) {
+    assert!(
+        child.origin.x >= parent.origin.x
+            && child.origin.y >= parent.origin.y
+            && child.right() <= parent.right()
+            && child.bottom() <= parent.bottom(),
+        "{label} 越出父容器：parent={parent:?}, child={child:?}"
+    );
+}
+
 fn simulate_click_count(
     cx: &mut VisualTestContext,
     position: Point<gpui::Pixels>,
@@ -111,4 +125,51 @@ fn modifier_double_click_copies_full_key_without_selecting(cx: &mut TestAppConte
         panel.read_with(cx, |panel, _| panel.selected.clone()),
         Some("17xxx27".into())
     );
+}
+
+#[gpui::test]
+fn key_tree_toolbar_wraps_controls_inside_supported_widths(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let panel = cx.new(|cx| {
+            let mut panel = KeyTreePanel::new(mock_service(), window, cx);
+            panel.config = Some(mock_config());
+            panel.keys = vec![KeyMeta::bare("orders:production:2026")];
+            panel.rebuild_tree();
+            panel
+        });
+        gpui_component::Root::new(panel, window, cx)
+    });
+
+    for width in [180.0, 280.0, 600.0] {
+        cx.simulate_resize(size(px(width), px(420.0)));
+        cx.run_until_parked();
+
+        let toolbar = cx
+            .debug_bounds("redis-key-tree-toolbar")
+            .expect("Redis Key 树工具栏应渲染");
+        let search = cx
+            .debug_bounds("redis-key-search")
+            .expect("Redis Key 搜索框应渲染");
+        assert_inside(toolbar, search, "Redis Key 搜索框");
+        for selector in [
+            "redis-key-refresh",
+            "redis-key-toggle-all",
+            "redis-open-console",
+            "redis-key-more",
+        ] {
+            let button = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} 应渲染"));
+            assert_inside(toolbar, button, selector);
+        }
+
+        if width == 180.0 {
+            let more = cx.debug_bounds("redis-key-more").expect("更多按钮应渲染");
+            assert!(
+                more.origin.y > search.origin.y,
+                "最小树宽度应让操作按钮换到搜索框下方：search={search:?}, more={more:?}"
+            );
+        }
+    }
 }

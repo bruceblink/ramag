@@ -136,7 +136,8 @@ impl Render for KeyTreePanel {
                     }),
             );
 
-        let header = h_flex()
+        let header = ramag_ui::responsive_toolbar()
+            .debug_selector(|| "redis-key-tree-toolbar".into())
             .w_full()
             .px(px(10.0))
             .py(px(8.0))
@@ -145,11 +146,20 @@ impl Render for KeyTreePanel {
             .gap(px(6.0))
             .items_center()
             .child(
-                div().flex_1().min_w_0().child(
-                    ramag_ui::cleanable_input(&self.search, "redis-key-search-clear", false, cx)
+                div()
+                    .debug_selector(|| "redis-key-search".into())
+                    .flex_1()
+                    .min_w(px(96.0))
+                    .child(
+                        ramag_ui::cleanable_input(
+                            &self.search,
+                            "redis-key-search-clear",
+                            false,
+                            cx,
+                        )
                         .small()
                         .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
-                ),
+                    ),
             )
             .child({
                 let scanning = self.loading;
@@ -161,6 +171,8 @@ impl Render for KeyTreePanel {
                 ramag_ui::clickable_button("redis-key-refresh")
                     .ghost()
                     .xsmall()
+                    .flex_none()
+                    .debug_selector(|| "redis-key-refresh".into())
                     .icon(icon)
                     .tooltip(if scanning { "停止扫描" } else { "刷新" })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -181,6 +193,8 @@ impl Render for KeyTreePanel {
                 ramag_ui::clickable_button("redis-key-toggle-all")
                     .ghost()
                     .xsmall()
+                    .flex_none()
+                    .debug_selector(|| "redis-key-toggle-all".into())
                     .icon(icon)
                     .tooltip(tip)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -195,6 +209,8 @@ impl Render for KeyTreePanel {
                 ramag_ui::clickable_button("redis-open-console")
                     .ghost()
                     .xsmall()
+                    .flex_none()
+                    .debug_selector(|| "redis-open-console".into())
                     .icon(IconName::SquareTerminal)
                     .tooltip("命令行")
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
@@ -214,6 +230,8 @@ impl Render for KeyTreePanel {
                 ramag_ui::clickable_button("redis-key-more")
                     .ghost()
                     .xsmall()
+                    .flex_none()
+                    .debug_selector(|| "redis-key-more".into())
                     .icon(ramag_ui::icons::ellipsis())
                     .tooltip("更多")
                     .disabled(read_only || mutating)
