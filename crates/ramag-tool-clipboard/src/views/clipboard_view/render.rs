@@ -1,6 +1,6 @@
 use gpui::{
-    ClickEvent, Context, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
-    prelude::*, px, uniform_list,
+    ClickEvent, Context, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div, prelude::*, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Selectable as _, Sizable as _, button::ButtonVariants as _, h_flex, input::Input,
@@ -33,6 +33,49 @@ impl Render for ClipboardView {
         let count_label =
             clipboard_status_label(count, total_bytes, query_active && self.search_truncated);
         let focus = self.focus_handle.clone();
+        let compact = f32::from(window.viewport_size().width) < 900.0;
+
+        let list_pane = v_flex()
+            .debug_selector(|| "clipboard-view-list-pane".into())
+            .min_w_0()
+            .when(compact, |pane| {
+                pane.w_full()
+                    .h(px(320.0))
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(border)
+            })
+            .when(!compact, |pane| {
+                pane.w(px(360.0))
+                    .h_full()
+                    .flex_none()
+                    .border_r_1()
+                    .border_color(border)
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_list(visible, cx)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w_full()
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .border_t_1()
+                    .border_color(border)
+                    .text_xs()
+                    .text_color(muted)
+                    .child(count_label),
+            );
+        let detail_pane = div()
+            .debug_selector(|| "clipboard-view-detail-pane".into())
+            .min_w_0()
+            .when(compact, |pane| pane.w_full().h(px(360.0)).flex_none())
+            .when(!compact, |pane| pane.flex_1().h_full())
+            .child(self.render_detail(cx));
 
         v_flex()
             .key_context("ClipboardView")
@@ -40,43 +83,20 @@ impl Render for ClipboardView {
             .on_action(cx.listener(Self::on_select_next))
             .on_action(cx.listener(Self::on_select_prev))
             .size_full()
+            .min_w_0()
             .child(self.render_toolbar(cx))
             .child(
                 h_flex()
+                    .id("clipboard-view-content")
+                    .debug_selector(|| "clipboard-view-content".into())
                     .flex_1()
+                    .min_w_0()
                     .min_h_0()
-                    .child(
-                        v_flex()
-                            .w(px(360.0))
-                            .h_full()
-                            .border_r_1()
-                            .border_color(border)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .child(self.render_list(visible, cx)),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w_full()
-                                    .px(px(12.0))
-                                    .py(px(6.0))
-                                    .border_t_1()
-                                    .border_color(border)
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .child(count_label),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .child(self.render_detail(cx)),
-                    ),
+                    .when(compact, |content| {
+                        content.flex_col().items_stretch().overflow_y_scroll()
+                    })
+                    .child(list_pane)
+                    .child(detail_pane),
             )
     }
 }
@@ -229,7 +249,9 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use gpui::{AppContext as _, Bounds, Pixels, TestAppContext, VisualTestContext, px, size};
+    use gpui::{
+        AppContext as _, Bounds, Entity, Pixels, TestAppContext, VisualTestContext, px, size,
+    };
     use ramag_app::ClipboardService;
     use ramag_domain::entities::{
         CapturedClip, ClipSource, ConnectionConfig, ConnectionId, QueryRecord, QueryRecordId,
@@ -365,17 +387,21 @@ mod tests {
         }
     }
 
-    fn add_clipboard_window(cx: &mut TestAppContext) -> &mut VisualTestContext {
+    fn add_clipboard_window(
+        cx: &mut TestAppContext,
+    ) -> (Option<Entity<ClipboardView>>, &mut VisualTestContext) {
         cx.update(gpui_component::init);
+        let mut view = None;
         let (_, visual_cx) = cx.add_window_view(|window, cx| {
             let service = Arc::new(ClipboardService::new(
                 Arc::new(TestClipboard),
                 Arc::new(TestStorage),
             ));
             let entity = cx.new(|cx| ClipboardView::new(service, window, cx));
+            view = Some(entity.clone());
             gpui_component::Root::new(entity, window, cx)
         });
-        visual_cx
+        (view, visual_cx)
     }
 
     fn assert_inside(parent: &Bounds<Pixels>, child: &Bounds<Pixels>, label: &str) {
@@ -407,7 +433,7 @@ mod tests {
     /// 搜索框和类型筛选在主页面工具栏中应随窗口宽度换行，且每个按钮都留在筛选区内。
     #[gpui::test]
     fn clipboard_toolbar_wraps_search_and_filters_inside_supported_widths(cx: &mut TestAppContext) {
-        let cx = add_clipboard_window(cx);
+        let (_, cx) = add_clipboard_window(cx);
 
         for width in [180.0, 240.0, 360.0, 600.0, 1024.0, 1440.0] {
             cx.simulate_resize(size(px(width), px(480.0)));
@@ -453,5 +479,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 紧凑窗口将列表和详情上下排列；常规窗口保留固定列表栏与可收缩详情栏。
+    #[gpui::test]
+    fn clipboard_content_reflows_list_and_detail_inside_supported_widths(cx: &mut TestAppContext) {
+        let (_, cx) = add_clipboard_window(cx);
+
+        for width in [360.0, 800.0, 1024.0, 1440.0] {
+            cx.simulate_resize(size(px(width), px(480.0)));
+            cx.run_until_parked();
+
+            let content = cx.debug_bounds("clipboard-view-content");
+            assert!(content.is_some(), "剪贴板内容区应渲染");
+            let Some(content) = content else { continue };
+            let list = cx.debug_bounds("clipboard-view-list-pane");
+            assert!(list.is_some(), "剪贴板列表区应渲染");
+            let Some(list) = list else { continue };
+            let detail = cx.debug_bounds("clipboard-view-detail-pane");
+            assert!(detail.is_some(), "剪贴板详情区应渲染");
+            let Some(detail) = detail else { continue };
+
+            assert_inside_horizontal(&content, &list, "列表区");
+            assert_inside_horizontal(&content, &detail, "详情区");
+            if width < 900.0 {
+                assert!(
+                    detail.origin.y >= list.bottom(),
+                    "紧凑窗口应将详情区放在列表区下方：list={list:?}, detail={detail:?}"
+                );
+            } else {
+                assert_inside(&content, &list, "列表区");
+                assert_inside(&content, &detail, "详情区");
+                assert!(
+                    detail.origin.x >= list.right(),
+                    "常规窗口应将详情区放在列表区右侧：list={list:?}, detail={detail:?}"
+                );
+            }
+        }
+    }
+
+    fn assert_inside_horizontal(parent: &Bounds<Pixels>, child: &Bounds<Pixels>, label: &str) {
+        assert!(
+            child.origin.x >= parent.origin.x && child.right() <= parent.right(),
+            "{label} 横向越出父容器：parent={parent:?}, child={child:?}"
+        );
     }
 }
