@@ -1,8 +1,8 @@
 //! List（行号 + 默认 RPUSH 方向）/ Set（无行号、提交时去重）共用单列行编辑器
 
 use gpui::{
-    App, ClickEvent, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, prelude::*, px,
+    App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
+    SharedString, Styled, Window, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _,
@@ -144,14 +144,16 @@ impl Render for LinesEditor {
             LinesKind::Set => format!("{} 行（提交时去重）", self.rows.len()),
         };
 
-        let mut toolbar = h_flex()
+        let mut toolbar = ramag_ui::responsive_toolbar()
+            .debug_selector(|| "redis-lines-toolbar".into())
             .w_full()
-            .items_center()
             .gap(px(10.0))
             .child(
                 ramag_ui::clickable_button("le-add")
                     .outline()
                     .small()
+                    .flex_none()
+                    .debug_selector(|| "redis-lines-add".into())
                     .icon(IconName::Plus)
                     .label("添加")
                     .disabled(self.disabled || self.rows.len() >= MAX_EDITOR_ROWS)
@@ -162,7 +164,16 @@ impl Render for LinesEditor {
                         this.add_row(window, cx);
                     })),
             )
-            .child(div().text_xs().text_color(muted_fg).child(count_label));
+            .child(
+                div()
+                    .debug_selector(|| "redis-lines-count".into())
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(muted_fg)
+                    .whitespace_normal()
+                    .child(count_label),
+            );
 
         if matches!(self.kind, LinesKind::List) {
             let dir = self.push_dir;
@@ -195,11 +206,21 @@ impl Render for LinesEditor {
                 } else {
                     chip = chip.cursor_pointer();
                 }
-                chip
+                chip.debug_selector(move || match id {
+                    "le-dir-head" => "redis-lines-dir-head".into(),
+                    "le-dir-tail" => "redis-lines-dir-tail".into(),
+                    _ => "redis-lines-dir".into(),
+                })
             };
             toolbar = toolbar
-                .child(div().flex_1())
-                .child(div().text_xs().text_color(muted_fg).child("插入位置"))
+                .child(
+                    div()
+                        .debug_selector(|| "redis-lines-direction-label".into())
+                        .flex_none()
+                        .text_xs()
+                        .text_color(muted_fg)
+                        .child("插入位置"),
+                )
                 .child(
                     dir_chip(PushDir::Head, "头部 LPUSH", "le-dir-head").on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| this.set_dir(PushDir::Head, cx)),
@@ -250,6 +271,15 @@ impl Render for LinesEditor {
         }
 
         // toolbar 放底部：行列表在上，添加/方向/计数 chip 在下，避免左上角先看到操作按钮
-        v_flex().w_full().gap(px(10.0)).child(list).child(toolbar)
+        v_flex()
+            .debug_selector(|| "redis-lines-editor".into())
+            .w_full()
+            .gap(px(10.0))
+            .child(list)
+            .child(toolbar)
     }
 }
+
+#[cfg(test)]
+#[path = "lines_editor_render_test.rs"]
+mod render_test;
