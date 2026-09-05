@@ -1,13 +1,12 @@
 //! Hash / ZSet / Stream 共用双列行编辑器。collect 时一次返回首个错误（含行号）
 
 use gpui::{
-    App, ClickEvent, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
-    Window, div, prelude::*, px,
+    App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement, ParentElement, Render,
+    SharedString, Styled, Window, div, prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _,
     button::ButtonVariants as _,
-    h_flex,
     input::{Input, InputState},
     v_flex,
 };
@@ -150,14 +149,16 @@ impl Render for PairsEditor {
             PairsKind::Stream => ("字段", 180.0_f32),
         };
 
-        let toolbar = h_flex()
+        let toolbar = ramag_ui::responsive_toolbar()
+            .debug_selector(|| "redis-pairs-toolbar".into())
             .w_full()
-            .items_center()
             .gap(px(10.0))
             .child(
                 ramag_ui::clickable_button("pe-add")
                     .outline()
                     .small()
+                    .flex_none()
+                    .debug_selector(|| "redis-pairs-add".into())
                     .icon(IconName::Plus)
                     .label("添加")
                     .disabled(self.disabled || self.rows.len() >= MAX_EDITOR_ROWS)
@@ -170,28 +171,44 @@ impl Render for PairsEditor {
             )
             .child(
                 div()
+                    .debug_selector(|| "redis-pairs-count".into())
+                    .flex_1()
+                    .min_w_0()
                     .text_xs()
                     .text_color(muted_fg)
+                    .whitespace_normal()
                     .child(format!("{} 个{count_unit}", self.rows.len())),
             );
 
         let mut list = v_flex().w_full().gap(px(6.0));
         for row in &self.rows {
             let id = row.id;
-            let mut line = h_flex()
+            let mut line = ramag_ui::responsive_toolbar()
+                .debug_selector({
+                    let id = row.id;
+                    move || format!("redis-pairs-row-{id}")
+                })
                 .w_full()
-                .items_center()
                 .gap(px(8.0))
                 .child(
                     div()
-                        .w(px(left_width))
-                        .flex_none()
+                        .debug_selector({
+                            let id = row.id;
+                            move || format!("redis-pairs-left-{id}")
+                        })
+                        .flex_1()
+                        .min_w(px(96.0))
+                        .max_w(px(left_width))
                         .child(Input::new(&row.left).disabled(self.disabled)),
                 )
                 .child(
                     div()
+                        .debug_selector({
+                            let id = row.id;
+                            move || format!("redis-pairs-right-{id}")
+                        })
                         .flex_1()
-                        .min_w_0()
+                        .min_w(px(96.0))
                         .child(Input::new(&row.right).disabled(self.disabled)),
                 );
             if self.rows.len() > 1 {
@@ -199,6 +216,8 @@ impl Render for PairsEditor {
                     ramag_ui::clickable_button(SharedString::from(format!("pe-rm-{id}")))
                         .ghost()
                         .small()
+                        .flex_none()
+                        .debug_selector(move || format!("redis-pairs-remove-{id}"))
                         .icon(IconName::Close)
                         .tooltip("删除")
                         .disabled(self.disabled)
@@ -211,7 +230,12 @@ impl Render for PairsEditor {
         }
 
         // toolbar 放底部：行列表在上，添加/计数 chip 在下，避免左上角先看到操作按钮
-        v_flex().w_full().gap(px(10.0)).child(list).child(toolbar)
+        v_flex()
+            .debug_selector(|| "redis-pairs-editor".into())
+            .w_full()
+            .gap(px(10.0))
+            .child(list)
+            .child(toolbar)
     }
 }
 
@@ -237,3 +261,7 @@ mod tests {
         assert!(z.0.contains("score"));
     }
 }
+
+#[cfg(test)]
+#[path = "pairs_editor_render_test.rs"]
+mod render_test;

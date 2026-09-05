@@ -131,6 +131,8 @@ Ramag 已完成桌面工具的主要能力闭环，包括数据库查询与结�
 
 本次继续完成 Redis List 编辑器工具栏切片：添加、数量状态和 List 插入方向控件复用共享换行布局，方向按钮保持独立尺寸；`lines_toolbar_wraps_controls_inside_supported_widths` 在 180/280/600px headless 窗口中验证工具栏、添加按钮、数量状态、插入位置以及 LPUSH/RPUSH 控件均留在编辑器内，并确认最小宽度下方向控件换行；Redis 目标包 105 个测试通过，Clippy、格式、源文件大小和差异检查通过；真实 Windows 窗口证据待补。
 
+本次继续完成 Redis Hash/ZSet/Stream 双列编辑器切片：字段和值输入框使用可收缩的最小宽度，行和添加/删除操作允许换行；`pairs_editor_wraps_fields_and_actions_inside_supported_widths` 以 Hash 编辑器两行数据覆盖 180/280/600px headless 窗口，验证字段、值、添加和删除控件均留在编辑器内，并确认最小宽度下字段和值分行；Redis 目标包 106 个测试通过，Clippy、格式、源文件大小和差异检查通过；真实 Windows 窗口证据待补。
+
 ### M6：问题收口和下一阶段评审
 
 处理 `UI-006`。核对已知问题表、专项路线、测试命令和实际证据，标明完成、待补证据和阻塞项。只有 P0/P1 问题均有结果记录后，才重新评估 Schema Registry、Kafka Connect 等大模块是否进入下一阶段。
