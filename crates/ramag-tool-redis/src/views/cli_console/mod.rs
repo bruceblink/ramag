@@ -16,9 +16,9 @@ use std::time::Instant;
 
 use crate::views::value_display::{DISPLAY_CONTENT_WIDTH_PX, split_display_lines};
 use gpui::{
-    ClickEvent, Context, Entity, IntoElement, ParentElement, Render, ScrollWheelEvent,
-    SharedString, Styled, Subscription, UniformListScrollHandle, Window, div, prelude::*, px,
-    uniform_list,
+    ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
+    ScrollWheelEvent, SharedString, Styled, Subscription, UniformListScrollHandle, Window, div,
+    prelude::*, px, uniform_list,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, IconName, Sizable as _,
@@ -364,3 +364,7 @@ impl CliConsole {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "render_test.rs"]
+mod render_test;

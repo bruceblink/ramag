@@ -33,7 +33,8 @@ impl Render for CliConsole {
             )
         };
 
-        let toolbar = h_flex()
+        let toolbar = ramag_ui::responsive_toolbar()
+            .debug_selector(|| "redis-cli-toolbar".into())
             .w_full()
             .px(px(12.0))
             .py(px(6.0))
@@ -41,21 +42,34 @@ impl Render for CliConsole {
             .border_color(border)
             .bg(secondary_bg)
             .gap(px(8.0))
-            .items_center()
-            .child(div().text_xs().text_color(muted_fg).child(history_label))
+            .child(
+                div()
+                    .debug_selector(|| "redis-cli-history".into())
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(muted_fg)
+                    .whitespace_normal()
+                    .child(history_label),
+            )
             .when(self.config.production, |this| {
                 this.child(
                     div()
+                        .debug_selector(|| "redis-cli-read-only".into())
+                        .flex_1()
+                        .min_w_0()
                         .text_xs()
                         .text_color(gpui::red())
+                        .whitespace_normal()
                         .child("只读：写命令已禁用"),
                 )
             })
-            .child(div().flex_1())
             .child(
                 ramag_ui::clickable_button("cli-clear")
                     .ghost()
                     .xsmall()
+                    .flex_none()
+                    .debug_selector(|| "redis-cli-clear".into())
                     .icon(ramag_ui::icons::trash())
                     .tooltip("清空")
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),

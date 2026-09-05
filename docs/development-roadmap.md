@@ -127,6 +127,8 @@ Ramag 已完成桌面工具的主要能力闭环，包括数据库查询与结�
 
 本次继续完成 VCS 文件栏工具栏切片：模式标签和搜索操作区复用 `responsive_toolbar`，固定按钮保持独立尺寸并允许换行；`vcs_files_toolbar_wraps_controls_inside_supported_widths` 在 1440×720 headless 窗口中将文件栏宽度设为 180/280/600px，验证工具栏、模式标签、分支选择器、搜索框以及刷新/展开/历史操作均留在父容器内，并确认最小宽度下搜索操作换行；VCS 目标包 127 个测试通过、5 个忽略，Clippy、格式、源文件大小和差异检查通过；真实 Windows 窗口证据待补。
 
+本次继续完成 Redis 命令控制台工具栏切片：历史状态和生产只读提示设置可收缩、可换行边界，清空按钮保持固定尺寸；`cli_toolbar_wraps_status_and_keeps_clear_inside_supported_widths` 在生产模式和 8 条执行中历史的长状态下覆盖 180/280/600px headless 窗口，验证状态文案与清空按钮均留在工具栏内；Redis 目标包 104 个测试通过，Clippy、格式、源文件大小和差异检查通过；真实 Windows 窗口证据待补。
+
 ### M6：问题收口和下一阶段评审
 
 处理 `UI-006`。核对已知问题表、专项路线、测试命令和实际证据，标明完成、待补证据和阻塞项。只有 P0/P1 问题均有结果记录后，才重新评估 Schema Registry、Kafka Connect 等大模块是否进入下一阶段。
