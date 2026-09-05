@@ -87,6 +87,8 @@ Ramag 已完成桌面工具的主要能力闭环，包括数据库查询与结�
 
 本次继续完成系统监控终止确认条切片：确认文案放入可收缩区域，取消和终止按钮保持固定尺寸并作为独立操作区；`termination_confirmation_wraps_long_process_name_inside_supported_widths` 在 360/1024/1440px 窗口中验证长进程名换行后与按钮不重叠，所有子项均留在确认条内；系统监控目标包 19 个测试、Clippy、格式、源文件大小和差异检查通过；真实 Windows 窗口证据待补。
 
+本次继续完成系统监控通知切片：通知使用共享 `responsive_toolbar`，图标和消息分成独立布局项，长完成/失败文案在窄窗口内收缩换行；`system_notice_wraps_long_message_inside_supported_widths` 在 360/1024/1440px 窗口中验证通知图标和消息均留在父容器内；系统监控目标包 20 个测试、Clippy、格式、源文件大小和差异检查通过；真实 Windows 窗口证据待补。
+
 本次继续完成 Redis Key 树工具栏切片：复用 `responsive_toolbar`，搜索框保留 `96px` 最小宽度，刷新、展开/折叠、命令行和更多操作允许换行；`key_tree_toolbar_wraps_controls_inside_supported_widths` 在 180/280/600px 树宽度中验证搜索框和四个操作按钮均留在工具栏内，并确认最小宽度下操作区移到搜索框下方；Redis 目标包 103 个测试、Clippy、格式、源文件大小和差异检查通过；真实 Windows 窗口证据待补。
 
 没有复现证据的问题先记录为待核查项，不直接扩大修改范围。涉及数据库、Kafka 或其他外部服务的真实验收，必须单独注明连接、数据、服务和未完成的运行条件。
@@ -118,6 +120,8 @@ Ramag 已完成桌面工具的主要能力闭环，包括数据库查询与结�
 本次继续完成 SSH 文件浏览器工具栏切片：复用 `responsive_toolbar`，移除固定 `40px` 高度，搜索框保留 `96px` 最小宽度，刷新、上传和新建操作允许换行；`directory_toolbar_wraps_controls_inside_supported_file_browser_widths` 在 180/280/600px 文件栏宽度以及 360/800/1440px 窗口中验证工具栏、搜索框和操作按钮均留在父容器内，并确认最小宽度下按钮移到搜索框下方；SSH 目标包 70 个测试、Clippy、格式、源文件大小和差异检查通过，真实 Windows 窗口证据待补。
 
 本次继续完成系统监控终止确认条切片：确认文案放入可收缩区域，取消和终止按钮保持固定尺寸并作为独立操作区；`termination_confirmation_wraps_long_process_name_inside_supported_widths` 在 360/1024/1440px 窗口中验证长进程名换行后与按钮不重叠，所有子项均留在确认条内；系统监控目标包 19 个测试、Clippy、格式、源文件大小和差异检查通过，真实 Windows 窗口证据待补。
+
+本次继续完成系统监控通知切片：通知使用共享 `responsive_toolbar`，图标和消息分成独立布局项，长完成/失败文案在窄窗口内收缩换行；`system_notice_wraps_long_message_inside_supported_widths` 在 360/1024/1440px 窗口中验证通知图标和消息均留在父容器内；系统监控目标包 20 个测试、Clippy、格式、源文件大小和差异检查通过，真实 Windows 窗口证据待补。
 
 本次继续完成 Redis Key 树工具栏切片：复用 `responsive_toolbar`，搜索框保留 `96px` 最小宽度，刷新、展开/折叠、命令行和更多操作允许换行；`key_tree_toolbar_wraps_controls_inside_supported_widths` 在 180/280/600px 树宽度中验证搜索框和四个操作按钮均留在工具栏内，并确认最小宽度下操作区移到搜索框下方；Redis 目标包 103 个测试、Clippy、格式、源文件大小和差异检查通过，真实 Windows 窗口证据待补。
 

@@ -123,6 +123,48 @@ fn termination_confirmation_wraps_long_process_name_inside_supported_widths(
     }
 }
 
+/// 完成或失败通知的长消息应在当前窗口内换行，不影响后续内容布局。
+#[gpui::test]
+#[allow(clippy::expect_used)]
+fn system_notice_wraps_long_message_inside_supported_widths(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|_| SystemView {
+            monitor: SystemMonitor::new(),
+            section: SystemSection::Processes,
+            termination_request: None,
+            termination_in_progress: false,
+            notice: Some(Notice {
+                message: "进程已终止，但系统返回了一段需要在窄窗口中完整换行显示的较长结果说明"
+                    .into(),
+                error: false,
+            }),
+        });
+        Root::new(view, window, cx)
+    });
+
+    for width in [360.0, 1024.0, 1440.0] {
+        cx.simulate_resize(size(px(width), px(420.0)));
+        cx.run_until_parked();
+
+        let notice = cx
+            .debug_bounds("system-notice")
+            .expect("system notice should be rendered");
+        let icon = cx
+            .debug_bounds("system-notice-icon")
+            .expect("system notice icon should be rendered");
+        let message = cx
+            .debug_bounds("system-notice-message")
+            .expect("system notice message should be rendered");
+        assert_inside(&notice, &icon, "system notice icon");
+        assert_inside(&notice, &message, "system notice message");
+        assert!(
+            message.size.width > px(0.0),
+            "system notice message should retain a visible width: {message:?}"
+        );
+    }
+}
+
 /// 用高核心数和趋势快照验证性能卡片、核心网格及折线图在三种窗口中都不越界。
 #[gpui::test]
 #[allow(clippy::expect_used)]

@@ -49,22 +49,34 @@ impl SystemView {
         };
         let mut background = color;
         background.a = 0.12;
-        h_flex()
+        ramag_ui::responsive_toolbar()
+            .id("system-notice")
+            .debug_selector(|| "system-notice".to_owned())
             .w_full()
             .flex_none()
-            .items_center()
-            .gap(px(8.0))
+            .items_start()
             .px_4()
             .py(px(7.0))
             .bg(background)
             .text_xs()
             .text_color(color)
-            .child(Icon::new(if notice.error {
-                IconName::CircleX
-            } else {
-                IconName::CircleCheck
-            }))
-            .child(notice.message.clone())
+            .child(
+                div()
+                    .debug_selector(|| "system-notice-icon".to_owned())
+                    .flex_none()
+                    .child(Icon::new(if notice.error {
+                        IconName::CircleX
+                    } else {
+                        IconName::CircleCheck
+                    })),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "system-notice-message".to_owned())
+                    .flex_1()
+                    .min_w_0()
+                    .child(notice.message.clone()),
+            )
     }
 
     fn render_termination_confirmation(
