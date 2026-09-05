@@ -63,13 +63,14 @@ impl SshView {
         let border = cx.theme().border;
 
         let show_transfers = has_transfers;
-        let toolbar = h_flex()
+        let toolbar = ramag_ui::responsive_toolbar()
+            .debug_selector(|| "ssh-directory-toolbar".into())
             .w_full()
-            .h(px(40.0))
             .flex_none()
             .items_center()
             .gap(px(4.0))
             .px(px(6.0))
+            .py(px(6.0))
             .bg(cx.theme().secondary)
             .border_b_1()
             .border_color(border)
@@ -78,7 +79,7 @@ impl SshView {
                     .id("ssh-directory-search")
                     .debug_selector(|| "ssh-directory-search".into())
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(96.0))
                     .child(
                         ramag_ui::cleanable_input(
                             &self.directory_search,
@@ -98,6 +99,8 @@ impl SshView {
                 ramag_ui::clickable_button("sftp-refresh")
                     .ghost()
                     .xsmall()
+                    .flex_none()
+                    .debug_selector(|| "sftp-refresh".into())
                     .icon(ramag_ui::icons::refresh_cw())
                     .tooltip("刷新")
                     .disabled(loading || !connection_available)
@@ -111,6 +114,8 @@ impl SshView {
                         ramag_ui::clickable_button("sftp-upload")
                             .ghost()
                             .xsmall()
+                            .flex_none()
+                            .debug_selector(|| "sftp-upload".into())
                             .icon(ramag_ui::icons::upload())
                             .tooltip("上传")
                             .disabled(loading || busy || !connection_available)
@@ -122,6 +127,8 @@ impl SshView {
                         ramag_ui::clickable_button("sftp-mkdir")
                             .ghost()
                             .xsmall()
+                            .flex_none()
+                            .debug_selector(|| "sftp-mkdir".into())
                             .icon(ramag_ui::icons::folder_plus())
                             .tooltip("新建")
                             .disabled(loading || busy || !connection_available)

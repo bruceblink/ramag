@@ -408,6 +408,7 @@ impl SshDriver for MockSshDriver {
 mod jumpserver_tests;
 mod lifecycle_tests;
 mod support;
+mod toolbar_tests;
 mod workspace_tests;
 
 use support::*;
