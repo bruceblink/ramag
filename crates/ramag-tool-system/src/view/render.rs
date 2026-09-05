@@ -75,29 +75,39 @@ impl SystemView {
         let theme = cx.theme();
         let mut background = theme.danger;
         background.a = 0.12;
-        h_flex()
+        ramag_ui::responsive_toolbar()
+            .id("system-termination-confirmation")
+            .debug_selector(|| "system-termination-confirmation".to_owned())
             .w_full()
             .flex_none()
-            .items_center()
-            .justify_between()
+            .items_start()
             .gap(px(12.0))
             .px_4()
             .py(px(8.0))
             .bg(background)
             .text_xs()
             .text_color(theme.danger)
-            .child(format!(
-                "确认终止进程 {}（PID {}）？",
-                request.name, request.pid
-            ))
+            .child(
+                div()
+                    .debug_selector(|| "system-termination-message".to_owned())
+                    .flex_1()
+                    .min_w_0()
+                    .child(format!(
+                        "确认终止进程 {}（PID {}）？",
+                        request.name, request.pid
+                    )),
+            )
             .child(
                 h_flex()
+                    .debug_selector(|| "system-termination-actions".to_owned())
                     .flex_none()
                     .gap(px(6.0))
                     .child(
                         ramag_ui::clickable_button("system-kill-cancel")
                             .ghost()
                             .xsmall()
+                            .flex_none()
+                            .debug_selector(|| "system-kill-cancel".to_owned())
                             .label("取消")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.cancel_termination(cx);
@@ -107,6 +117,8 @@ impl SystemView {
                         ramag_ui::clickable_button("system-kill-confirm")
                             .danger()
                             .xsmall()
+                            .flex_none()
+                            .debug_selector(|| "system-kill-confirm".to_owned())
                             .label("终止")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.confirm_termination(cx);

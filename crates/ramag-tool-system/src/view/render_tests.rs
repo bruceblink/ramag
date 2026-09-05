@@ -60,6 +60,69 @@ fn narrow_window_keeps_monitor_controls_and_process_table_inside_content(cx: &mu
     assert!(table.origin.x + table.size.width <= content.origin.x + content.size.width);
 }
 
+/// 长进程名不能把确认文案或取消、终止按钮推出状态条。
+#[gpui::test]
+#[allow(clippy::expect_used)]
+fn termination_confirmation_wraps_long_process_name_inside_supported_widths(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|_| SystemView {
+            monitor: SystemMonitor::new(),
+            section: SystemSection::Processes,
+            termination_request: Some(TerminationRequest {
+                pid: 4242,
+                name: "process-with-a-very-long-name-that-must-wrap-within-the-confirmation-bar"
+                    .into(),
+            }),
+            termination_in_progress: false,
+            notice: None,
+        });
+        Root::new(view, window, cx)
+    });
+
+    for width in [360.0, 1024.0, 1440.0] {
+        cx.simulate_resize(size(px(width), px(420.0)));
+        cx.run_until_parked();
+
+        let confirmation = cx
+            .debug_bounds("system-termination-confirmation")
+            .expect("termination confirmation should be rendered");
+        let message = cx
+            .debug_bounds("system-termination-message")
+            .expect("termination message should be rendered");
+        let actions = cx
+            .debug_bounds("system-termination-actions")
+            .expect("termination actions should be rendered");
+        let cancel = cx
+            .debug_bounds("system-kill-cancel")
+            .expect("cancel button should be rendered");
+        let confirm = cx
+            .debug_bounds("system-kill-confirm")
+            .expect("confirm button should be rendered");
+
+        assert_inside(&confirmation, &message, "termination message");
+        assert_inside(&confirmation, &actions, "termination actions");
+        assert_inside(&actions, &cancel, "cancel button");
+        assert_inside(&actions, &confirm, "confirm button");
+        assert!(
+            cancel.right() <= confirm.origin.x,
+            "termination buttons should not overlap: cancel={cancel:?}, confirm={confirm:?}"
+        );
+        if width == 360.0 {
+            let message_and_actions_are_separated = message.right() <= actions.origin.x
+                || actions.right() <= message.origin.x
+                || message.bottom() <= actions.origin.y
+                || actions.bottom() <= message.origin.y;
+            assert!(
+                message_and_actions_are_separated,
+                "narrow confirmation should keep long message and actions separated: message={message:?}, actions={actions:?}"
+            );
+        }
+    }
+}
+
 /// 用高核心数和趋势快照验证性能卡片、核心网格及折线图在三种窗口中都不越界。
 #[gpui::test]
 #[allow(clippy::expect_used)]
