@@ -64,6 +64,10 @@ impl ConnectionFormPanel {
     }
 }
 
+#[cfg(test)]
+#[path = "render_tests.rs"]
+mod render_tests;
+
 impl ConnectionFormPanel {
     fn render_environment_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.environment.read(cx).value().trim().to_string();
@@ -150,6 +154,7 @@ impl Render for ConnectionFormPanel {
                 // 主体滚动，避免常显滚动条。
                 div()
                     .id("conn-form-body")
+                    .debug_selector(|| "conn-form-body".into())
                     .w_full()
                     .max_h(body_max_h)
                     .overflow_y_scroll()
@@ -160,6 +165,8 @@ impl Render for ConnectionFormPanel {
             .children(driver_selector)
             .child(
                 h_flex()
+                    .id("conn-form-uri-row")
+                    .debug_selector(|| "conn-form-uri-row".into())
                     .w_full()
                     .items_end()
                     .gap(px(8.0))
@@ -184,6 +191,8 @@ impl Render for ConnectionFormPanel {
                     .when(is_sqlite, |this| {
                         this.child(
                             h_flex()
+                                .id("conn-form-sqlite-fields")
+                                .debug_selector(|| "conn-form-sqlite-fields".into())
                                 .w_full()
                                 .gap(px(12.0))
                                 .child(div().flex_1().min_w_0().child(field_row(
@@ -197,6 +206,8 @@ impl Render for ConnectionFormPanel {
                         )
                         .child(
                             div()
+                                .id("conn-form-sqlite-help")
+                                .debug_selector(|| "conn-form-sqlite-help".into())
                                 .text_xs()
                                 .text_color(muted_fg)
                                 .child("SQLite 使用本地文件，不需要端口、数据库名、认证、TLS 或 SSH。"),
@@ -407,6 +418,8 @@ impl Render for ConnectionFormPanel {
             .child(div().h(px(1.0)).bg(border).my(px(10.0)))
             .child(
                 h_flex()
+                    .id("conn-form-footer")
+                    .debug_selector(|| "conn-form-footer".into())
                     .w_full()
                     .items_center()
                     .justify_between()
@@ -416,7 +429,7 @@ impl Render for ConnectionFormPanel {
                             .min_w_0()
                             .items_center()
                             .gap(px(12.0))
-                            .child(
+                            .child(div().debug_selector(|| "test".into()).flex_none().child(
                                 ramag_ui::clickable_button("test")
                                     .small()
                                     .label(if matches!(self.test_state, TestState::Testing) {
@@ -431,7 +444,7 @@ impl Render for ConnectionFormPanel {
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.handle_test(cx);
                                     })),
-                            )
+                            ))
                             .when_some(test_msg, |this, (msg, color)| {
                                 let msg_for_copy = msg.clone();
                                 let msg_el = div()
@@ -470,7 +483,7 @@ impl Render for ConnectionFormPanel {
                             .items_center()
                             .gap(px(8.0))
                             .flex_none()
-                            .child(
+                            .child(div().debug_selector(|| "cancel".into()).flex_none().child(
                                 ramag_ui::clickable_button("cancel")
                                     .ghost()
                                     .small()
@@ -479,8 +492,8 @@ impl Render for ConnectionFormPanel {
                                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                                         this.handle_cancel(window, cx);
                                     })),
-                            )
-                            .child(
+                            ))
+                            .child(div().debug_selector(|| "save".into()).flex_none().child(
                                 ramag_ui::clickable_button("save")
                                     .primary()
                                     .small()
@@ -495,7 +508,7 @@ impl Render for ConnectionFormPanel {
                                             this.handle_save(cx);
                                         }
                                     })),
-                            ),
+                            )),
                     ),
             )
     }

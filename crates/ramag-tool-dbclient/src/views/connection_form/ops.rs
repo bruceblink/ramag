@@ -266,15 +266,22 @@ impl ConnectionFormPanel {
         let mut accent_border = accent;
         accent_border.a = 0.55;
 
-        let mut row = h_flex().w_full().items_center().gap(px(8.0));
+        let mut row = h_flex()
+            .id("conn-form-driver-selector")
+            .debug_selector(|| "conn-form-driver-selector".into())
+            .w_full()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.0));
         for &(id, name, available) in DRIVERS {
             let is_selected = self.driver_id == id;
             let btn_id = SharedString::from(format!("driver-btn-{id}"));
+            let debug_id = btn_id.clone();
 
             let mut btn = h_flex()
                 .id(btn_id)
-                .flex_1()
-                .min_w_0()
+                .debug_selector(move || debug_id.to_string())
+                .flex_none()
                 .items_center()
                 .justify_center()
                 .gap(px(6.0))
@@ -286,7 +293,7 @@ impl ConnectionFormPanel {
             if let Some(icon) = ramag_ui::icons::db_brand_icon(id) {
                 btn = btn.child(img(icon).size(px(16.0)).flex_none());
             }
-            btn = btn.child(name.to_string());
+            btn = btn.child(gpui::div().flex_none().child(name.to_string()));
 
             if is_selected {
                 btn = btn

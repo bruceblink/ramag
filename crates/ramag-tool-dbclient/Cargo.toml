@@ -62,3 +62,6 @@ tracing = { workspace = true }
 # 结果表滚动回归测试：仅测试构建启用 headless 窗口与输入模拟。
 gpui = { workspace = true, features = ["test-support"] }
 async-trait = { workspace = true }
+ramag-infra-mongodb = { workspace = true }
+ramag-infra-redis = { workspace = true }
+ramag-infra-sqlite = { workspace = true }
