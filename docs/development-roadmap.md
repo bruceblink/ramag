@@ -135,6 +135,8 @@ Ramag 已完成桌面工具的主要能力闭环，包括数据库查询与结�
 
 本次继续完成剪贴板悬浮抽屉顶部工具栏切片：改用 `responsive_toolbar`，搜索框和截断提示保留 `128px` 最小宽度并允许窄窗口分行；`drawer_topbar_wraps_search_and_limit_status_inside_narrow_window` 覆盖 180/240/600px 宽度，验证工具栏、搜索框和截断提示均留在父容器内；剪贴板目标包 19 个测试、workspace Clippy、格式、源文件大小、最终构建和 Docker Kafka 集成通过；真实 Windows 主窗口和剪贴板搜索交互已完成，`WM_HOTKEY` 弹出抽屉因 CUA `press_key` 限制仍待人工或原生输入补证。
 
+本次继续完成剪贴板主页面工具栏切片：搜索区从固定 `360px` 改为可收缩并限制最大宽度，类型筛选按钮置于共享换行布局；`clipboard_toolbar_wraps_search_and_filters_inside_supported_widths` 以 180/240/360/600/1024/1440px headless 窗口验证搜索区、筛选区和全部 6 个筛选按钮均留在父容器内，并确认窄窗口下筛选区换行；剪贴板目标包 20 个测试、workspace Clippy、格式、源文件大小和差异检查通过；真实 Windows 窗口证据待补。
+
 ### M6：问题收口和下一阶段评审
 
 处理 `UI-006`。核对已知问题表、专项路线、测试命令和实际证据，标明完成、待补证据和阻塞项。只有 P0/P1 问题均有结果记录后，才重新评估 Schema Registry、Kafka Connect 等大模块是否进入下一阶段。

@@ -7113,6 +7113,7 @@ dependencies = [
 name = "ramag-tool-clipboard"
 version = "0.0.5"
 dependencies = [
+ "async-trait",
  "chrono",
  "gpui",
  "gpui-component",
