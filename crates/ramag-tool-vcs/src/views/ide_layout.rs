@@ -1,5 +1,6 @@
 use gpui::{
-    AnyElement, ClickEvent, Context, IntoElement, ParentElement, Styled, div, prelude::*, px,
+    AnyElement, ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, Styled, div,
+    prelude::*, px,
 };
 use gpui_component::{
     ActiveTheme, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
@@ -125,12 +126,19 @@ impl VcsView {
             FilesViewMode::Changes,
             FilesViewMode::Stash,
         ];
-        let mut tabs_row = h_flex().gap(px(2.0)).items_center();
+        let mut tabs_row = h_flex()
+            .debug_selector(|| "vcs-files-mode-tabs".into())
+            .flex_1()
+            .min_w_0()
+            .flex_wrap()
+            .gap(px(2.0))
+            .items_center();
         for mode in modes {
             tabs_row = tabs_row.child(self.mode_tab_button(mode, active, cx));
         }
         let busy_indicator: AnyElement = if let Some(label) = self.busy_label {
             h_flex()
+                .debug_selector(|| "vcs-files-busy-indicator".into())
                 .flex_1()
                 .min_w_0()
                 .justify_end()
@@ -147,9 +155,14 @@ impl VcsView {
                 )
                 .into_any_element()
         } else {
-            div().flex_1().into_any_element()
+            div()
+                .debug_selector(|| "vcs-files-busy-indicator".into())
+                .flex_1()
+                .min_w_0()
+                .into_any_element()
         };
-        let mode_row = h_flex()
+        let mode_row = ramag_ui::responsive_toolbar()
+            .debug_selector(|| "vcs-files-mode-toolbar".into())
             .w_full()
             .px(px(10.0))
             .py(px(6.0))
@@ -161,31 +174,37 @@ impl VcsView {
             .child(busy_indicator)
             .child(self.render_branch_picker(cx));
 
-        let mut search_row = h_flex()
+        let mut search_row = ramag_ui::responsive_toolbar()
+            .debug_selector(|| "vcs-files-search-toolbar".into())
             .w_full()
-            .items_center()
             .px(px(10.0))
             .py(px(8.0))
             .border_b_1()
             .border_color(border)
             .gap(px(6.0))
             .child(
-                div().flex_1().min_w_0().child(
-                    ramag_ui::cleanable_input(
-                        &self.files_search_input,
-                        "vcs-files-search-clear",
-                        false,
-                        cx,
-                    )
-                    .small()
-                    .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
-                ),
+                div()
+                    .debug_selector(|| "vcs-files-search".into())
+                    .flex_1()
+                    .min_w(px(96.0))
+                    .child(
+                        ramag_ui::cleanable_input(
+                            &self.files_search_input,
+                            "vcs-files-search-clear",
+                            false,
+                            cx,
+                        )
+                        .small()
+                        .prefix(Icon::new(IconName::Search).small().text_color(muted_fg)),
+                    ),
             );
         if self.repo.is_some() {
             search_row = search_row.child(
                 ramag_ui::clickable_button("vcs-refresh")
                     .ghost()
                     .xsmall()
+                    .flex_none()
+                    .debug_selector(|| "vcs-refresh".into())
                     .icon(ramag_ui::icons::refresh_cw())
                     .tooltip("刷新")
                     .disabled(busy)
@@ -205,6 +224,8 @@ impl VcsView {
                 ramag_ui::clickable_button("vcs-pf-toggle-all")
                     .ghost()
                     .xsmall()
+                    .flex_none()
+                    .debug_selector(|| "vcs-pf-toggle-all".into())
                     .icon(icon)
                     .tooltip(tip)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -225,6 +246,8 @@ impl VcsView {
                 ramag_ui::clickable_button("vcs-history-pane-toggle")
                     .ghost()
                     .xsmall()
+                    .flex_none()
+                    .debug_selector(|| "vcs-history-pane-toggle".into())
                     .icon(if history_visible {
                         IconName::PanelBottom
                     } else {
@@ -237,6 +260,9 @@ impl VcsView {
             );
         }
         v_flex()
+            .debug_selector(|| "vcs-files-toolbar".into())
+            .w_full()
+            .flex_none()
             .child(mode_row)
             .child(search_row)
             .into_any_element()
@@ -313,6 +339,7 @@ impl VcsView {
                     .small()
                     .w_full()
                     .min_w_0()
+                    .debug_selector(|| "vcs-branch-picker".into())
                     .overflow_hidden()
                     .label(label)
                     .text_color(cx.theme().foreground)
@@ -401,6 +428,11 @@ impl VcsView {
         let mut btn = ramag_ui::clickable_button(id)
             .ghost()
             .small()
+            .flex_none()
+            .debug_selector({
+                let id = mode.id_str();
+                move || format!("vcs-files-tab-{id}")
+            })
             .selected(is_active)
             .tooltip(mode.label());
         btn = match mode {
@@ -423,6 +455,7 @@ impl VcsView {
         ramag_ui::clickable_button("vcs-stash-save")
             .outline()
             .xsmall()
+            .flex_none()
             .icon(IconName::Inbox)
             .tooltip("储藏")
             .disabled(

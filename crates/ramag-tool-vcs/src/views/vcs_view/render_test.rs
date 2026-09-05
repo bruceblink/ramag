@@ -2,6 +2,8 @@
 //! 验证整条 diff 渲染管线不 panic；截图被 macOS 屏幕录制权限挡，本测试是可重复真机验证替代。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use super::super::helpers::{ActiveView, FileContentSnapshot, FileTab, FileTabSource, GroupKind};
+use super::VcsView;
 use async_trait::async_trait;
 use gpui::{
     AppContext, Entity, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase,
@@ -15,12 +17,10 @@ use ramag_domain::entities::{
 use ramag_domain::error::{DomainError, Result};
 use ramag_domain::traits::{GitDriver, Storage};
 use std::{path::Path, sync::Arc};
-
-use super::super::helpers::{ActiveView, FileContentSnapshot, FileTab, FileTabSource, GroupKind};
-use super::VcsView;
+#[path = "render_toolbar_test.rs"]
+mod render_toolbar_test;
 /// 空壳 GitDriver：render 是纯展示、不调 driver，方法只需可编译且不 panic
 struct MockGit;
-
 #[async_trait]
 impl GitDriver for MockGit {
     fn name(&self) -> &'static str {
