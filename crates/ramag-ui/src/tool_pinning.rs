@@ -26,6 +26,46 @@ pub fn set_pinned_tools(pinned: Vec<String>, cx: &mut App) {
     cx.set_global(ToolPinningGlobal(pinned));
 }
 
+/// 切换已注册工具的固定状态并异步保存最新顺序。
+pub fn toggle_tool_pinned(id: &str, registry: &ToolRegistry, cx: &mut App) {
+    let current = pinned_tools(cx);
+    let Some(next) = registry.toggle_pinned(id, &current) else {
+        return;
+    };
+    set_pinned_tools(next.clone(), cx);
+    if let Ok(value) = serde_json::to_string(&next) {
+        crate::preferences::persist_preference_latest(ramag_app::TOOL_PINNED_PREF_KEY, value, cx);
+    }
+}
+
+/// 将固定工具移动到固定区目标位置，并返回是否发生变化。
+pub fn reorder_pinned(id: &str, target_index: usize, cx: &mut App) {
+    let mut pinned = pinned_tools(cx);
+    let Some(source_index) = pinned.iter().position(|item| item == id) else {
+        return;
+    };
+    let item = pinned.remove(source_index);
+    pinned.insert(target_index.min(pinned.len()), item);
+    set_pinned_tools(pinned.clone(), cx);
+    if let Ok(value) = serde_json::to_string(&pinned) {
+        crate::preferences::persist_preference_latest(ramag_app::TOOL_PINNED_PREF_KEY, value, cx);
+    }
+}
+
+/// 从固定列表移除工具并保存最新固定状态。
+pub fn unpin_tool(id: &str, cx: &mut App) {
+    let mut pinned = pinned_tools(cx);
+    let before = pinned.len();
+    pinned.retain(|item| item != id);
+    if pinned.len() == before {
+        return;
+    }
+    set_pinned_tools(pinned.clone(), cx);
+    if let Ok(value) = serde_json::to_string(&pinned) {
+        crate::preferences::persist_preference_latest(ramag_app::TOOL_PINNED_PREF_KEY, value, cx);
+    }
+}
+
 /// 解析启动偏好、过滤无效 ID，并初始化 UI 全局状态；返回是否丢弃了无效数据。
 pub fn init_tool_pinning(
     preference: Option<&str>,
@@ -64,12 +104,17 @@ mod tests {
     fn startup_pinning_uses_only_registered_tools(cx: &mut gpui::TestAppContext) {
         let registry = ToolRegistry::new();
         registry.register(Arc::new(DummyTool(ToolMeta::new("a", "A", ""))));
-        cx.update(|app| {
-            let changed = init_tool_pinning(Some(r#"["a","missing","a"]"#), &registry, app)
-                .expect("valid pin preference");
-            assert!(changed);
-            assert_eq!(super::pinned_tools(app), ["a"]);
-        });
+        cx.update(
+            |app| match init_tool_pinning(Some(r#"["a","missing","a"]"#), &registry, app) {
+                Ok(changed) => {
+                    assert!(changed);
+                    assert_eq!(super::pinned_tools(app), ["a"]);
+                }
+                Err(error) => {
+                    assert_eq!(error, "unreachable");
+                }
+            },
+        )
     }
 
     #[gpui::test]
