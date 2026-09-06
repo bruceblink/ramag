@@ -27,6 +27,7 @@ pub mod shortcuts_dialog;
 pub mod system_settings;
 pub mod theme;
 pub(crate) mod tool_layout;
+pub mod tool_pinning;
 pub mod transfer_ui;
 
 pub use actions::{CloseTab, OpenRecentItems};
@@ -77,6 +78,7 @@ pub use system_settings::{
     set_system_settings, system_settings,
 };
 pub use theme::{Mode, StorageGlobal, apply_theme, current_mode, init_theme};
+pub use tool_pinning::{ToolPinningGlobal, init_tool_pinning, pinned_tools, set_pinned_tools};
 pub use transfer_ui::{
     TransferState, open_import_options_dialog, progress_sink, spawn_transfer_ticker,
     transfer_notification, transfer_progress_row,
