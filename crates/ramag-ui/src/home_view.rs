@@ -7,8 +7,9 @@ use gpui::{
     div, hsla, prelude::*, px,
 };
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, Icon, IconName, Sizable,
     animation::{Transition, ease_in_out_cubic},
+    button::ButtonVariants as _,
     h_flex, v_flex,
 };
 
@@ -22,6 +23,11 @@ use crate::tool_layout::{
     notify_tool_layout_changed, persist_tool_order, tool_drag_display_slots, tool_drag_handle,
     tool_drag_state, tool_drop_index, update_tool_drop_target,
 };
+use crate::tool_pinning::{pinned_tools, reorder_pinned, toggle_tool_pinned};
+
+#[path = "home_pinned.rs"]
+mod home_pinned;
+use home_pinned::render_pinned_tools;
 
 #[derive(Debug, Clone)]
 pub enum HomeEvent {
@@ -78,6 +84,18 @@ impl HomeView {
         }
         clear_tool_drag(cx);
     }
+
+    /// 提交固定区内部的排序结果；固定顺序独立于普通工具注册顺序保存。
+    fn complete_pinned_drop(
+        &mut self,
+        dragged_id: &str,
+        fallback_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let target_index = tool_drop_index(ToolDragSurface::Pinned, fallback_index, cx);
+        reorder_pinned(dragged_id, target_index, cx);
+        clear_tool_drag(cx);
+    }
 }
 
 impl Render for HomeView {
@@ -96,8 +114,21 @@ impl Render for HomeView {
         accent_border.a = 0.55;
 
         let tools = self.registry.list();
-        let has_tools = !tools.is_empty();
-        let current_order = tools
+        let registry = self.registry.clone();
+        let pinned_ids = pinned_tools(cx);
+        let pinned_set = pinned_ids.iter().collect::<std::collections::HashSet<_>>();
+        let pinned_tools = pinned_ids
+            .iter()
+            .filter_map(|id| tools.iter().find(|tool| tool.meta().id == **id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let unpinned_tools = tools
+            .iter()
+            .filter(|tool| !pinned_set.contains(&tool.meta().id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let has_tools = !unpinned_tools.is_empty();
+        let current_order = unpinned_tools
             .iter()
             .map(|tool| tool.meta().id.clone())
             .collect::<Vec<_>>();
@@ -127,7 +158,7 @@ impl Render for HomeView {
                 continue;
             };
 
-            let Some(tool) = tools.iter().find(|tool| tool.meta().id == *id) else {
+            let Some(tool) = unpinned_tools.iter().find(|tool| tool.meta().id == *id) else {
                 continue;
             };
             let Some(source_index) = current_order.iter().position(|item| item == id) else {
@@ -135,12 +166,14 @@ impl Render for HomeView {
             };
             let card_id = SharedString::from(format!("home-tool-{id}"));
             let id_for_click = id.clone();
+            let pin_id = id.clone();
             let name = tool.meta().name.clone();
             let description = tool.meta().description.clone();
             let icon = ActivityBar::icon_for_tool(id);
             let preview_icon = icon.clone();
             let preview_name = name.clone();
             let preview_description = description.clone();
+            let pin_registry = registry.clone();
             let drag = ToolDrag { id: id.clone() };
             let is_dragged = drag_state.dragged_id.as_deref() == Some(id.as_str());
             let card_background = if is_dragged {
@@ -199,6 +232,19 @@ impl Render for HomeView {
                         ),
                 )
                 .child(div().text_xs().text_color(muted_fg).child(description))
+                .child(
+                    div().absolute().top(px(10.0)).right(px(34.0)).child(
+                        crate::clickable_button(format!("home-tool-pin-{pin_id}"))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(IconName::Star))
+                            .tooltip("固定到首页")
+                            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                toggle_tool_pinned(&pin_id, &pin_registry, cx);
+                            })),
+                    ),
+                )
                 .child(
                     div()
                         .absolute()
@@ -320,6 +366,15 @@ impl Render for HomeView {
                     .gap(px(36.0))
                     .items_center()
                     .child(render_logo(mono, accent))
+                    .child(render_pinned_tools(
+                        &pinned_tools,
+                        accent,
+                        border,
+                        fg,
+                        muted_fg,
+                        card_bg,
+                        cx,
+                    ))
                     .child(tool_grid),
             )
     }

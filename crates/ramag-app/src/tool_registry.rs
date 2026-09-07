@@ -8,6 +8,8 @@ use ramag_domain::Tool;
 
 /// 工具入口顺序在 Storage 中使用的偏好键。
 pub const TOOL_ORDER_PREF_KEY: &str = "tool_order";
+/// 首页固定工具 ID 在 Storage 中使用的偏好键。
+pub const TOOL_PINNED_PREF_KEY: &str = "tool_pinned";
 
 struct ToolEntry {
     tool: Arc<dyn Tool>,
@@ -17,6 +19,12 @@ struct ToolEntry {
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: RwLock<Vec<ToolEntry>>,
+}
+
+/// 固定工具状态的纯数据快照，便于 UI 与启动流程共享同一套规则。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolPinState {
+    pub pinned: Vec<String>,
 }
 
 impl ToolRegistry {
@@ -280,6 +288,47 @@ impl ToolRegistry {
     pub fn count(&self) -> usize {
         self.tools.read().iter().filter(|t| t.enabled).count()
     }
+
+    /// 根据已注册工具过滤、去重并保留偏好顺序，未知和隐藏工具不会进入首页固定区。
+    pub fn sanitize_pinned(&self, pinned: &[String]) -> Vec<String> {
+        let tools = self.tools.read();
+        let mut seen = std::collections::HashSet::new();
+        pinned
+            .iter()
+            .filter(|id| {
+                seen.insert(id.as_str())
+                    && tools
+                        .iter()
+                        .any(|entry| entry.enabled && entry.tool.meta().id == **id)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// 应用固定工具偏好并返回清理后的状态是否与输入不同。
+    pub fn apply_pinned(&self, pinned: &[String]) -> (Vec<String>, bool) {
+        let sanitized = self.sanitize_pinned(pinned);
+        (sanitized.clone(), sanitized != pinned)
+    }
+
+    /// 切换一个已启用工具的固定状态，返回固定区的新顺序；未注册或隐藏工具不改变状态。
+    pub fn toggle_pinned(&self, id: &str, pinned: &[String]) -> Option<Vec<String>> {
+        if !self
+            .tools
+            .read()
+            .iter()
+            .any(|entry| entry.enabled && entry.tool.meta().id == id)
+        {
+            return None;
+        }
+        let mut next = self.sanitize_pinned(pinned);
+        if let Some(index) = next.iter().position(|item| item == id) {
+            next.remove(index);
+        } else {
+            next.push(id.to_owned());
+        }
+        Some(next)
+    }
 }
 
 #[cfg(test)]
@@ -420,5 +469,40 @@ mod tests {
         assert!(reg.apply_order_json(r#"["c","a"]"#).unwrap());
         assert_eq!(reg.order(), ["c", "a", "b"]);
         assert!(reg.apply_order_json("not-json").is_err());
+    }
+
+    #[test]
+    fn pinned_preferences_are_sanitized_and_deduplicated() {
+        let reg = ToolRegistry::new();
+        reg.register(dummy("a", "ToolA"));
+        reg.register(dummy("b", "ToolB"));
+        reg.register(dummy("hidden", "Hidden"));
+        reg.set_enabled("hidden", false);
+
+        let input = vec![
+            "b".into(),
+            "missing".into(),
+            "b".into(),
+            "hidden".into(),
+            "a".into(),
+        ];
+        let (pinned, changed) = reg.apply_pinned(&input);
+        assert_eq!(pinned, ["b", "a"]);
+        assert!(changed);
+    }
+
+    #[test]
+    fn toggling_pinned_appends_and_removes_in_stable_order() {
+        let reg = ToolRegistry::new();
+        reg.register(dummy("a", "ToolA"));
+        reg.register(dummy("b", "ToolB"));
+
+        let pinned = vec!["a".into()];
+        assert_eq!(
+            reg.toggle_pinned("b", &pinned),
+            Some(vec!["a".into(), "b".into()])
+        );
+        assert_eq!(reg.toggle_pinned("a", &pinned), Some(Vec::new()));
+        assert_eq!(reg.toggle_pinned("missing", &pinned), None);
     }
 }

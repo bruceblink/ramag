@@ -438,7 +438,8 @@ mod tests {
             cx.update(|window, app| { terminal.read(app).focus_handle(app).is_focused(window) })
         );
 
-        let deadline = Instant::now() + Duration::from_secs(3);
+        // 多个 PTY 测试并发启动时，Linux 子进程调度可能超过 3 秒；保留有界等待，避免误报。
+        let deadline = Instant::now() + Duration::from_secs(10);
         let received = loop {
             let output = terminal.read_with(cx, |terminal, _| {
                 terminal

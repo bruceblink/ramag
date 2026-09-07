@@ -26,6 +26,7 @@ pub(crate) struct ToolDrag {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolDragSurface {
     Home,
+    Pinned,
     ActivityBar,
 }
 
@@ -83,7 +84,7 @@ pub(crate) fn begin_tool_drag(
             surface,
             index: source_index,
             side: match surface {
-                ToolDragSurface::Home => ToolDropSide::Left,
+                ToolDragSurface::Home | ToolDragSurface::Pinned => ToolDropSide::Left,
                 ToolDragSurface::ActivityBar => ToolDropSide::Top,
             },
         }),
@@ -347,7 +348,7 @@ impl Render for ToolDragPreview {
         let muted_foreground = theme.muted_foreground;
 
         let preview = match self.surface {
-            ToolDragSurface::Home => div()
+            ToolDragSurface::Home | ToolDragSurface::Pinned => div()
                 .pl(self.position.x - px(140.0))
                 .pt(self.position.y - px(56.0))
                 .child(

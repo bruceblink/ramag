@@ -31,7 +31,7 @@ use gpui_component::Root;
 use ramag_app::{
     AUTO_CHECK_INTERVAL, ClipboardService, ConnectionService, DataSyncGate, DataSyncService,
     MongoService, ObjectStorageService, RedisService, SshService, TOOL_ORDER_PREF_KEY,
-    ToolRegistry, UpdateService,
+    TOOL_PINNED_PREF_KEY, ToolRegistry, UpdateService,
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use ramag_domain::traits::ClipboardDriver;
@@ -68,7 +68,8 @@ use ramag_ui::{
     FEEDBACK_ISSUE_URL, HomeEvent, HomeView, NavTarget, OpenRecentItems,
     REDIS_TREE_SETTINGS_PREF_KEY, RamagAssets, SYSTEM_SETTINGS_PREF_KEY, SettingsView, Shell,
     StorageGlobal, init_database_result_settings, init_database_search_settings,
-    init_redis_tree_settings, init_system_settings, init_theme, sync_update_indicator,
+    init_redis_tree_settings, init_system_settings, init_theme, init_tool_pinning,
+    sync_update_indicator,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -206,6 +207,7 @@ fn main() {
             SYSTEM_SETTINGS_PREF_KEY,
             ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY,
             TOOL_ORDER_PREF_KEY,
+            TOOL_PINNED_PREF_KEY,
         ],
     );
     let initial_pref = startup_preferences.get("theme_mode").cloned();
@@ -222,6 +224,7 @@ fn main() {
     let initial_shortcut_overrides = startup_preferences
         .get(ramag_ui::shortcuts_dialog::SHORTCUT_OVERRIDES_PREF_KEY)
         .cloned();
+    let initial_pinned_pref = startup_preferences.get(TOOL_PINNED_PREF_KEY).cloned();
 
     // 启动时同步读取剪贴板开关，避免恢复到已隐藏的工具。
     let registry = build_tool_registry();
@@ -289,6 +292,9 @@ fn main() {
         gpui_component::init(cx);
         ramag_tool_ssh::init(cx);
         init_theme(initial_pref.as_deref(), cx);
+        if let Err(error) = init_tool_pinning(initial_pinned_pref.as_deref(), &deps.registry, cx) {
+            warn!(operation = "tool_pinning_load", error, "ignore invalid pinned tool preference");
+        }
         if let Err(error) =
             init_database_search_settings(initial_database_search_pref.as_deref(), cx)
         {
